@@ -1,0 +1,7 @@
+-fix gtk window dragging (abandon if it's ugly code needed to fix)
+
+-set defaults for scrolling as vim binds (j and k)
+
+-turbo scroll mode (double tap scroll keys to 3x scroll in given direction)
+
+-draw circle around mouse when xkeycursor assumes control of the mouse
