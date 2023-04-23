@@ -14,7 +14,7 @@
 /* List of modifiers: { ShiftMask, LockMask, ControlMask, Mod1Mask, Mod2Mask, 
  * Mod3Mask, Mod4Mask, Mod5Mask }
  * Mod1Mask is Alt, Superkey is Mod4Mask */
-#define ACTIVATE_MOD (Mod4Mask) 
+#define ACTIVATE_MOD (Mod1Mask) 
 #define ACTIVATE_KEY ("w")
 
 #define L_BUTTON ("space")
@@ -265,6 +265,7 @@ void uinput_state_emit(void)
         if (MOUSE_STATE.key_down_mask & (1 << i) && time_diff[i] > 100000)
         {
             printf("should scroll = true;\n");
+            printf("scroll = %d\n", scroll);
             should_scroll = true;
             MOUSE_STATE.last_activated[i] = time;
             
@@ -477,6 +478,7 @@ int main()
     
     while(1) 
     {
+
         XNextEvent(DISPLAY, &ev);
         if (ev.type == KeyPress)
         {
