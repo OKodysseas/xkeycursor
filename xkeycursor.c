@@ -10,6 +10,9 @@
 #include <linux/uinput.h>
 #include <X11/Xlib.h>
 #include <errno.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <X11/extensions/Xrandr.h>
 
 /*****************************************************************************/
 /* List of modifiers: { ShiftMask, LockMask, ControlMask, Mod1Mask, Mod2Mask, 
@@ -70,7 +73,7 @@ static mouse_action MOUSE_STATE = {
     false,
     false,
     false,
-    false
+    false,
 };
     
 static Display* DISPLAY;
@@ -88,7 +91,8 @@ static uint32_t KC_R_KEY;
 static uint32_t KC_SCROLL_U;
 static uint32_t KC_SCROLL_D;
 
-static uint32_t REFRESH_RATE = 16666; /*TODO: change depending on monitor hz*/
+static uint16_t REFRESH_RATE;
+static struct {int x; int y;} DISPLAY_RES;
 
 static int      UINPUT_FD;
 static bool     IS_ACTIVE; /* When active, mouse is controlled via keyboard. */
@@ -102,13 +106,63 @@ void ld_config(void)
 #define WORD_SIZE 32
 #define FILE_PATH_SIZE 512
 
+
+    XRRScreenConfiguration* x_conf = XRRGetScreenInfo(DISPLAY, ROOT);
+
+    int n_sizes;
+    Rotation curr_rotation;
+
+    XRRScreenSize* scr_sizes = XRRSizes(DISPLAY, 0, &n_sizes);
+    
+    SizeID curr_size_id = XRRConfigCurrentConfiguration(
+        x_conf,
+        &curr_rotation
+    );
+
+    REFRESH_RATE = (int)(1000000 * (float)1/XRRConfigCurrentRate(x_conf));
+    printf("ref_rate=%d\n", REFRESH_RATE);
+    DISPLAY_RES.x = scr_sizes[curr_size_id].width;
+    DISPLAY_RES.y = scr_sizes[curr_size_id].height;
+
+    XRRFreeScreenConfigInfo(x_conf);
+
+    printf(
+        "refreshrate=%d\nres=(%d,%d)\n",
+        REFRESH_RATE,
+        DISPLAY_RES.x,
+        DISPLAY_RES.y
+    );
+
+
     char* config_dir = getenv("HOME");
     char cfg_file_path[FILE_PATH_SIZE];
 
     memset(cfg_file_path, '\0', FILE_PATH_SIZE);
     strncat(cfg_file_path, config_dir, strnlen(config_dir, FILE_PATH_SIZE));
-    strncat(cfg_file_path, "/", 1);
-    strncat(cfg_file_path, "/.config/xkeycursor.cfg", 32);
+    strncat(cfg_file_path, "/.config/xkeycursor", 32);
+
+    switch (mkdir(cfg_file_path, 0777))
+    {
+        case 0:
+            printf(
+                "Successfully created config folder at: %s\n",
+                cfg_file_path
+            );
+            break;
+        case -1:
+            printf("Failed to create config folder. Errno: %d\n", errno);
+            if (errno == EEXIST)
+            {
+                printf(
+                    "Further info:\nconfig folder could not be created"
+                    "\nbecause file/folder of the same name already exists"
+                    "\nin the parent directory.\n"
+                );
+            }
+            break;
+    }
+
+    strncat(cfg_file_path, "/bindings.conf", 16);
 
     FILE* fp = fopen(cfg_file_path, "r");
 
@@ -387,8 +441,26 @@ void uinput_state_emit(void)
         speed = (acc >= 60) ? 12 : 2 + acc/10;
     }
 
-    if (move_rel_x) emit(UINPUT_FD, EV_REL, REL_X, speed*move_rel_x);
-    if (move_rel_y) emit(UINPUT_FD, EV_REL, REL_Y, speed*move_rel_y);
+    float multiplier = (float)DISPLAY_RES.y/1080;
+
+    if (move_rel_x)
+    {
+        emit(
+            UINPUT_FD,
+            EV_REL,
+            REL_X,
+            (int) (move_rel_x * speed * multiplier)
+        );
+    }
+    if (move_rel_y)
+    {
+        emit(
+            UINPUT_FD,
+            EV_REL,
+            REL_Y,
+            (int) (move_rel_y * speed * multiplier)
+        );
+    }
 
     // For scroll we do not wish to apply it constantly at a high frequency
     // as it is too much. Instead, apply it at larger strides of time.

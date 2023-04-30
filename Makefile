@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -g -Wall -Wextra -pedantic
-LFLAGS = -lX11
+LFLAGS = -lX11 -lXrandr
 OBJ = xkeycursor.o
 BINARY = xkeycursor
 BUILDDIR = build/
