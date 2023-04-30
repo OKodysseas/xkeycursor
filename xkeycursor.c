@@ -9,26 +9,12 @@
 #include <sys/time.h>
 #include <linux/uinput.h>
 #include <X11/Xlib.h>
+#include <errno.h>
 
 /*****************************************************************************/
 /* List of modifiers: { ShiftMask, LockMask, ControlMask, Mod1Mask, Mod2Mask, 
  * Mod3Mask, Mod4Mask, Mod5Mask }
  * Mod1Mask is Alt, Superkey is Mod4Mask */
-#define ACTIVATE_MOD (Mod1Mask) 
-#define ACTIVATE_KEY ("w")
-
-#define L_BUTTON ("space")
-#define R_BUTTON ("Tab")
-#define U_KEY    ("w")
-#define D_KEY    ("s")
-#define L_KEY    ("a")
-#define R_KEY    ("d")
-#define SCROLL_U ("e")
-#define SCROLL_D ("q")
-#define SLOW_KEY ("Shift_L")
-
-// Refresh rate in microseconds.
-#define REFRESH_RATE (16666)
 /*****************************************************************************/
 
 /* Contains the action response for each motion related key press, including a 
@@ -53,7 +39,6 @@ struct mouse_action
     bool     r_button_up;
     bool     l_button_down_held;
     bool     r_button_down_held;
-    bool     is_slow;
 };
 typedef struct mouse_action mouse_action;
 
@@ -68,12 +53,30 @@ void active_loop(void);
 
 /*****************************[Static variables]******************************/
 
-static mouse_action MOUSE_STATE = { {0, 0, 0, 0, 0, 0},
-    { {0, -1, 0}, {0, 1, 0}, {-1, 0, 0}, {1, 0, 0}, {0, 0, 1}, {0, 0, -1} }
-    , 0x00, 0x00, false, false, false, false, false, false, false};
+static mouse_action MOUSE_STATE = {
+    {0, 0, 0, 0, 0, 0},
+    { 
+        {0, -1, 0},
+        {0, 1, 0},
+        {-1, 0, 0},
+        {1, 0, 0},
+        {0, 0, 1},
+        {0, 0, -1}
+    },
+    0x00,
+    0x00,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+};
     
 static Display* DISPLAY;
 static Window   ROOT;
+
+static uint32_t KM_ACTIVATE_MOD;
 
 static uint32_t KC_ACTIVATE_KEY; 
 static uint32_t KC_L_BUTTON;
@@ -84,29 +87,161 @@ static uint32_t KC_L_KEY;
 static uint32_t KC_R_KEY;
 static uint32_t KC_SCROLL_U;
 static uint32_t KC_SCROLL_D;
-static uint32_t KC_SLOW_KEY;
+
+static uint32_t REFRESH_RATE = 16666; /*TODO: change depending on monitor hz*/
 
 static int      UINPUT_FD;
 static bool     IS_ACTIVE; /* When active, mouse is controlled via keyboard. */
 
 /*****************************************************************************/
 
-void keycodes_init(void)
+void ld_config(void)
 {
 #define GET_KEYCODE(KEY) (XKeysymToKeycode(DISPLAY, XStringToKeysym((KEY))))
+#define CHUNK_SIZE 256 
+#define WORD_SIZE 32
+#define FILE_PATH_SIZE 512
 
-    KC_ACTIVATE_KEY   = GET_KEYCODE(ACTIVATE_KEY);
-    KC_L_BUTTON       = GET_KEYCODE(L_BUTTON);
-    KC_R_BUTTON       = GET_KEYCODE(R_BUTTON);
-    KC_U_KEY          = GET_KEYCODE(U_KEY);
-    KC_D_KEY          = GET_KEYCODE(D_KEY);
-    KC_L_KEY          = GET_KEYCODE(L_KEY);
-    KC_R_KEY          = GET_KEYCODE(R_KEY);
-    KC_SCROLL_U       = GET_KEYCODE(SCROLL_U);
-    KC_SCROLL_D       = GET_KEYCODE(SCROLL_D);
-    KC_SLOW_KEY       = GET_KEYCODE(SLOW_KEY);
+    char* config_dir = getenv("HOME");
+    char cfg_file_path[FILE_PATH_SIZE];
+
+    memset(cfg_file_path, '\0', FILE_PATH_SIZE);
+    strncat(cfg_file_path, config_dir, strnlen(config_dir, FILE_PATH_SIZE));
+    strncat(cfg_file_path, "/", 1);
+    strncat(cfg_file_path, "/.config/xkeycursor.cfg", 32);
+
+    FILE* fp = fopen(cfg_file_path, "r");
+
+    if (fp == NULL)
+    {
+        printf("Config file not found. Setting defaults. Errno: %d\n", errno);
+
+        //TODO: if file is non-existent, create one with default settings.
+
+        KM_ACTIVATE_MOD = Mod1Mask;
+        KC_ACTIVATE_KEY = GET_KEYCODE("w");
+        KC_L_BUTTON     = GET_KEYCODE("space");
+        KC_R_BUTTON     = GET_KEYCODE("Tab");
+        KC_U_KEY        = GET_KEYCODE("w");
+        KC_D_KEY        = GET_KEYCODE("s");
+        KC_L_KEY        = GET_KEYCODE("a");
+        KC_R_KEY        = GET_KEYCODE("d");
+        KC_SCROLL_U     = GET_KEYCODE("e");
+        KC_SCROLL_D     = GET_KEYCODE("q");
+        REFRESH_RATE    = 16666; /*TODO: change depending on monitor hz*/
+
+        return;
+    }
+
+    char buf[CHUNK_SIZE];
+    while (fgets(buf, CHUNK_SIZE, fp) != NULL)
+    {
+        size_t eq_op_idx;
+        bool eq_set = false;
+
+        for (size_t i = 0; i < CHUNK_SIZE; ++i)
+        {
+            if (buf[i] == '=')
+            {
+                eq_op_idx = i;
+                eq_set = true;
+                break;
+            }
+        }
+
+        if (!eq_set)
+        {
+            continue;
+        }
+
+        char key[WORD_SIZE];
+        char value[WORD_SIZE];
+
+        memset(key, '\0', WORD_SIZE);
+        memset(value, '\0', WORD_SIZE);
+
+        strncpy(key, buf, eq_op_idx);
+        strncpy(value, buf+eq_op_idx+1, CHUNK_SIZE-eq_op_idx);
+
+        //Lines are \n terminated by default as per POSIX. We need to remove
+        //the \n character to allow for proper comparison using strncmp().
+        {
+            size_t l_chr_idx = strnlen(value, WORD_SIZE)-1;
+            if (value[l_chr_idx] == '\n')
+            {
+                value[l_chr_idx] = '\0';
+            }
+        }
+
+        memset(buf, '\0', CHUNK_SIZE);
+
+        //TODO: Support more X keys here
+        if (strcmp(key, "ActivateModifier") == 0)
+        {
+            if (strcmp(value, "Alt") == 0)
+            {
+                KM_ACTIVATE_MOD = Mod1Mask;
+            }
+            else if (strcmp(value, "Super"))
+            {
+                KM_ACTIVATE_MOD = Mod4Mask;
+            }
+        }
+        else if (strcmp(key, "ActivateKey") == 0)
+        {
+            KC_ACTIVATE_KEY = GET_KEYCODE(value);
+        }
+        else if (strcmp(key, "LeftClickKey") == 0)
+        {
+            KC_L_BUTTON = GET_KEYCODE(value);
+        }
+        else if (strcmp(key, "RightClickKey") == 0)
+        {
+            KC_R_BUTTON = GET_KEYCODE(value);
+        }
+        else if (strcmp(key, "MouseUpKey") == 0)
+        {
+            KC_U_KEY = GET_KEYCODE(value);
+        }
+        else if (strcmp(key, "MouseDownKey") == 0)
+        {
+            KC_D_KEY = GET_KEYCODE(value);
+        }
+        else if (strcmp(key, "MouseLeftKey") == 0)
+        {
+            KC_L_KEY = GET_KEYCODE(value);
+        }
+        else if (strcmp(key, "MouseRightKey") == 0)
+        {
+            KC_R_KEY = GET_KEYCODE(value);
+        }
+        else if (strcmp(key, "ScrollUpKey") == 0)
+        {
+            KC_SCROLL_U = GET_KEYCODE(value);
+        }
+        else if (strcmp(key, "ScrollDownKey") == 0)
+        {
+            KC_SCROLL_D = GET_KEYCODE(value);
+        }
+    }
+
+    printf("KM_ACTIVATE_MOD = %d\n", KM_ACTIVATE_MOD);
+    printf("KC_ACTIVATE_KEY = %d\n", KC_ACTIVATE_KEY);
+    printf("KC_L_BUTTON = %d\n", KC_L_BUTTON);
+    printf("KC_R_BUTTON = %d\n", KC_R_BUTTON);
+    printf("KC_U_KEY = %d\n", KC_U_KEY);
+    printf("KC_D_KEY = %d\n", KC_D_KEY);
+    printf("KC_L_KEY = %d\n", KC_L_KEY);
+    printf("KC_R_KEY = %d\n", KC_R_KEY);
+    printf("KC_SCROLL_U = %d\n", KC_SCROLL_U);
+    printf("KC_SCROLL_D = %d\n", KC_SCROLL_D);
+
+    fclose(fp);
 
 #undef GET_KEYCODE
+#undef CHUNK_SIZE
+#undef WORD_SIZE
+#undef FILE_PATH_SIZE
 }
 
 void activate(void)
@@ -123,7 +258,6 @@ void activate(void)
         XGrabKey(DISPLAY, KC_R_KEY, 0, ROOT, True, GrabModeAsync, GrabModeAsync);
         XGrabKey(DISPLAY, KC_SCROLL_U, 0, ROOT, True, GrabModeAsync, GrabModeAsync);
         XGrabKey(DISPLAY, KC_SCROLL_D, 0, ROOT, True, GrabModeAsync, GrabModeAsync);
-        XGrabKey(DISPLAY, KC_SLOW_KEY, 0, ROOT, True, GrabModeAsync, GrabModeAsync);
     }
 }
 
@@ -141,7 +275,6 @@ void deactivate(void)
         XUngrabKey(DISPLAY, KC_R_KEY, 0, ROOT);
         XUngrabKey(DISPLAY, KC_SCROLL_U, 0, ROOT);
         XUngrabKey(DISPLAY, KC_SCROLL_D, 0, ROOT);
-        XUngrabKey(DISPLAY, KC_SLOW_KEY, 0, ROOT);
     }
 }
 
@@ -173,7 +306,7 @@ void exit_handler(__attribute__((unused))int id)
 {
     deactivate();
 
-    XUngrabKey(DISPLAY, KC_ACTIVATE_KEY, ACTIVATE_MOD, ROOT);
+    XUngrabKey(DISPLAY, KC_ACTIVATE_KEY, KM_ACTIVATE_MOD, ROOT);
 
     if (UINPUT_FD)
     {
@@ -351,7 +484,7 @@ void active_loop(void)
             {
             case KeyPress:
                 if ((ev.xkey.keycode == KC_ACTIVATE_KEY) 
-                    && (ev.xkey.state == ACTIVATE_MOD))
+                    && (ev.xkey.state == KM_ACTIVATE_MOD))
                 {
                     deactivate();
                     printf("deactivate()\n");
@@ -367,10 +500,6 @@ void active_loop(void)
                 {
                     MOUSE_STATE.r_button_down = true;
                     MOUSE_STATE.r_button_up = false;
-                }
-                else if ((ev.xkey.keycode == KC_SLOW_KEY) && (!ev.xkey.state))
-                {
-                    MOUSE_STATE.is_slow = true;
                 }
                 else if ((ev.xkey.keycode == KC_U_KEY) && (!ev.xkey.state))
                 {
@@ -418,10 +547,6 @@ void active_loop(void)
         {
             MOUSE_STATE.r_button_up = true;
         }
-        if (!(keys_down[KC_SLOW_KEY >> 3] & (1 << (KC_SLOW_KEY & 0x7))))
-        {
-            MOUSE_STATE.is_slow = false;
-        }
         if (!(keys_down[KC_U_KEY >> 3] & (1 << (KC_U_KEY & 0x7))))
         {
             MOUSE_STATE.key_down_mask &= ~0x01;
@@ -463,13 +588,17 @@ int main()
     XEvent ev;
     char keys_down[32];
 
-    if ( !(DISPLAY = XOpenDisplay(NULL)) ) return 1;
+    if ( !(DISPLAY = XOpenDisplay(NULL)) )
+    {
+        return 1;
+    }
+
     ROOT = DefaultRootWindow(DISPLAY);
 
-    keycodes_init();
+    ld_config();
     uinput_init(&usetup);
 
-    XGrabKey(DISPLAY, KC_ACTIVATE_KEY, ACTIVATE_MOD, 
+    XGrabKey(DISPLAY, KC_ACTIVATE_KEY, KM_ACTIVATE_MOD, 
         ROOT, True, GrabModeAsync, GrabModeAsync);
 
     signal(SIGINT,  exit_handler);
@@ -483,7 +612,7 @@ int main()
         if (ev.type == KeyPress)
         {
             if ((ev.xkey.keycode == KC_ACTIVATE_KEY) 
-                && (ev.xkey.state == ACTIVATE_MOD))
+                && (ev.xkey.state == KM_ACTIVATE_MOD))
             {
                 printf("activate()\n");
                 activate();
